@@ -322,6 +322,15 @@ namespace Upgrade
                                     if (entry.FullName.EndsWith("/") || entry.FullName.EndsWith("\\"))
                                         continue;
 
+                                    // 跳过"Upgrade.exe"文件，避免覆盖程序自身
+                                    if (entry.FullName.Equals("Upgrade.exe", StringComparison.OrdinalIgnoreCase) ||
+                                        entry.FullName.EndsWith("/Upgrade.exe", StringComparison.OrdinalIgnoreCase) ||
+                                        entry.FullName.EndsWith("\\Upgrade.exe", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        状态 = $"跳过Upgrade.exe，避免覆盖程序自身";
+                                        continue;
+                                    }
+
                                     // 提取文件，覆盖已存在的文件
                                     try
                                     {
@@ -345,6 +354,7 @@ namespace Upgrade
                                     }
                                 }
                             }
+
 
                             状态 = "解压完成";
                         }
