@@ -33,7 +33,7 @@ namespace Upgrade
 
         private void button1_Click(object sender, EventArgs e)
         {
-            if (完成倒计时 < 0)
+            if (状态 == "完成")
             {
                 try
                 {
@@ -383,10 +383,12 @@ namespace Upgrade
 
         private void timer2_Tick(object sender, EventArgs e)
         {
-            button1.Text = $"完成({完成倒计时})";
+            状态 = "完成";
+            button1.Text = $"{状态}({完成倒计时})";
             完成倒计时--;
             if (完成倒计时 < 0) {
                 timer2.Stop();
+                timer2.Enabled = false;
                 button1_Click(sender, e);
             }
         }
