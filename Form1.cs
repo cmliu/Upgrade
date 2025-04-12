@@ -241,10 +241,32 @@ namespace Upgrade
         }
 
         /// <summary>
-        /// 异步下载并解压文件，显示下载进度
+        /// 异步下载并解压文件，显示下载进度，自动重试多种下载方式
         /// </summary>
         private async Task DownloadAndExtractFileAsync()
         {
+            string 代理下载链接 = 下载链接;
+            string 原生下载链接 = 下载链接;
+
+            // 计算"https://"在下载链接中出现的次数
+            int httpsCount = 0;
+            int lastIndex = -1;
+            int currentIndex = 0;
+
+            // 查找所有"https://"出现的位置
+            while ((currentIndex = 下载链接.IndexOf("https://", currentIndex)) != -1)
+            {
+                httpsCount++;
+                lastIndex = currentIndex;
+                currentIndex += 8; // "https://".Length = 8
+            }
+
+            // 如果"https://"出现2次或以上，提取最后一个"https://"之后的内容作为原生链接
+            if (httpsCount >= 2 && lastIndex != -1)
+            {
+                原生下载链接 = 下载链接.Substring(lastIndex);
+            }
+
             状态 = "开始下载";
             string zipFilePath = System.IO.Path.Combine(Application.StartupPath, "Upgrade.zip");
 
@@ -259,45 +281,73 @@ namespace Upgrade
 
                 状态 = "准备下载文件";
 
-                // 创建不使用系统代理的WebClient
-                using (System.Net.WebClient client = new System.Net.WebClient())
+                // 定义下载方法，方便重用
+                async Task<bool> TryDownloadAsync(string url, bool useProxy)
                 {
-                    // 绕过系统代理设置
-                    client.Proxy = null;
-
-                    // 设置下载进度更新事件
-                    client.DownloadProgressChanged += (sender, e) =>
+                    try
                     {
-                        // 在UI线程上更新进度条
-                        this.Invoke(new Action(() =>
-                        {
-                            progressBar1.Value = e.ProgressPercentage;
-                            状态 = $"下载中: {e.ProgressPercentage}% ({e.BytesReceived / 1024} KB / {e.TotalBytesToReceive / 1024} KB)";
-                        }));
-                    };
+                        状态 = $"尝试从{(useProxy ? "代理" : "直连")}下载";
 
-                    // 下载完成事件
-                    client.DownloadFileCompleted += (sender, e) =>
+                        // 创建WebClient
+                        using (System.Net.WebClient client = new System.Net.WebClient())
+                        {
+                            // 根据参数设置是否使用系统代理
+                            if (!useProxy)
+                            {
+                                client.Proxy = null;
+                            }
+
+                            // 设置下载进度更新事件
+                            client.DownloadProgressChanged += (sender, e) =>
+                            {
+                                // 在UI线程上更新进度条
+                                this.Invoke(new Action(() =>
+                                {
+                                    progressBar1.Value = e.ProgressPercentage;
+                                    状态 = $"下载中: {e.ProgressPercentage}% ({e.BytesReceived / 1024} KB / {e.TotalBytesToReceive / 1024} KB)";
+                                }));
+                            };
+
+                            // 下载完成事件
+                            var tcs = new TaskCompletionSource<bool>();
+
+                            client.DownloadFileCompleted += (sender, e) =>
+                            {
+                                if (e.Error != null)
+                                {
+                                    状态 = $"下载错误: {e.Error.Message}";
+                                    tcs.SetResult(false);
+                                }
+                                else if (e.Cancelled)
+                                {
+                                    状态 = "下载已取消";
+                                    tcs.SetResult(false);
+                                }
+                                else
+                                {
+                                    状态 = "下载完成";
+                                    tcs.SetResult(true);
+                                }
+                            };
+
+                            // 开始异步下载
+                            client.DownloadFileAsync(new Uri(url), zipFilePath);
+
+                            // 等待下载完成
+                            return await tcs.Task;
+                        }
+                    }
+                    catch (Exception ex)
                     {
-                        if (e.Error != null)
-                        {
-                            状态 = $"下载错误: {e.Error.Message}";
-                        }
-                        else if (!e.Cancelled)
-                        {
-                            状态 = "下载完成";
-                        }
-                    };
+                        状态 = $"下载出错: {ex.Message}";
+                        return false;
+                    }
+                }
 
-                    状态 = "正在下载文件...";
-
-                    // 异步下载文件
-                    await client.DownloadFileTaskAsync(new Uri(下载链接), zipFilePath);
-
-                    状态 = "下载完成，准备解压";
-
-                    // 解压文件
-                    await Task.Run(() =>
+                // 定义解压缩方法
+                async Task<bool> ExtractFileAsync()
+                {
+                    return await Task.Run(() =>
                     {
                         try
                         {
@@ -355,13 +405,13 @@ namespace Upgrade
                                 }
                             }
 
-
                             状态 = "解压完成";
+                            return true;
                         }
                         catch (Exception ex)
                         {
                             状态 = $"解压错误: {ex.Message}";
-                            throw;
+                            return false;
                         }
                         finally
                         {
@@ -380,7 +430,44 @@ namespace Upgrade
                             }
                         }
                     });
+                }
 
+                // 下载重试逻辑实现
+                bool downloadSuccess = false;
+                bool linksAreDifferent = 代理下载链接 != 原生下载链接;
+
+                // 尝试1: 使用系统代理从代理下载链接下载
+                downloadSuccess = await TryDownloadAsync(代理下载链接, true);
+
+                // 如果失败且链接不同，尝试2: 使用系统代理从原生下载链接下载
+                if (!downloadSuccess && linksAreDifferent)
+                {
+                    downloadSuccess = await TryDownloadAsync(原生下载链接, true);
+                }
+
+                // 如果仍然失败，尝试3: 不使用系统代理从代理下载链接下载
+                if (!downloadSuccess)
+                {
+                    downloadSuccess = await TryDownloadAsync(代理下载链接, false);
+                }
+
+                // 如果仍然失败且链接不同，尝试4: 不使用系统代理从原生下载链接下载
+                if (!downloadSuccess && linksAreDifferent)
+                {
+                    downloadSuccess = await TryDownloadAsync(原生下载链接, false);
+                }
+
+                // 如果所有尝试都失败
+                if (!downloadSuccess)
+                {
+                    throw new Exception("所有下载尝试均失败，无法完成升级");
+                }
+
+                // 下载成功后，解压文件
+                bool extractSuccess = await ExtractFileAsync();
+                if (!extractSuccess)
+                {
+                    throw new Exception("文件解压失败，无法完成升级");
                 }
             }
             catch (Exception ex)
@@ -388,6 +475,7 @@ namespace Upgrade
                 状态 = $"升级过程出错: {ex.Message}";
                 MessageBox.Show($"升级过程中出现错误: {ex.Message}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+
             timer2.Enabled = true;
         }
 
